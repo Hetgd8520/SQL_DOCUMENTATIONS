@@ -263,7 +263,7 @@ HAVING COUNT(oi.order_item_id)>(SELECT AVG(item_count) FROM (SELECT order_id, CO
 
 -- Common Table Expressions (CTEs)
 
--- 37. **Calculate customer lifetime value using CTE**:
+-- 37. **Calculate customer lifetime value using CTE**:  
 WITH customer_orders AS (
     SELECT c.customer_id, 
            c.first_name, 
