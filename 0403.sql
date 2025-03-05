@@ -4,7 +4,8 @@
 -- Create Database
 CREATE DATABASE Four_Table;
 USE Four_Table;
-
+SET SQL_SAFE_UPDATES = 0;
+SET sql_mode = '';
 -- Create customers table
 CREATE TABLE customers (
   customer_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -24,7 +25,7 @@ CREATE TABLE products (
   product_id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
   description TEXT,
-  price DECIMAL(10, 2) NOT NULL,
+  price DECIMAL(10, 2) NOT NULL, 
   category VARCHAR(50),
   stock_quantity INT NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -294,13 +295,229 @@ SELECT oi1.order_id,p1.name AS product1 , p2.name AS product2
 JOIN products p1 ON oi1.product_id = p1.product_id
 JOIN products p2 ON oi2.product_id = p2.product_id
 )
-SELECT product1,product2,COUNT(*) AS combination_count FROM (
-SELECT oi1.order_id,p1.name AS product1 , p2.name AS product2 
-	FROM order_items oi1 
-    JOIN order_items oi2 
-		ON oi1.order_id = oi2.order_id 
-			AND oi1.product_id < oi2.product_id 
-JOIN products p1 ON oi1.product_id = p1.product_id
-JOIN products p2 ON oi2.product_id = p2.product_id
-) GROUP BY product1,product2 ORDER BY combination_count DESC;
+SELECT product1,product2,COUNT(*) AS combination_count FROM order_products GROUP BY product1,product2 ORDER BY combination_count DESC;
 
+-- 39 **Recursive CTE to find customer order history with running totals**:
+WITH RECURSIVE customer_order_history AS (
+    SELECT c.customer_id, c.first_name, c.last_name, 
+           o.order_id, o.order_date, o.total_amount,
+           o.total_amount AS running_total,
+           1 AS order_sequence
+    FROM customers c
+    JOIN orders o ON c.customer_id = o.customer_id
+    WHERE o.order_date = (
+        SELECT MIN(order_date) 
+        FROM orders 
+        WHERE customer_id = c.customer_id
+    )
+    
+    UNION ALL
+    
+    SELECT coh.customer_id, coh.first_name, coh.last_name,
+           o.order_id, o.order_date, o.total_amount,
+           coh.running_total + o.total_amount AS running_total,
+           coh.order_sequence + 1 AS order_sequence
+    FROM customer_order_history coh
+    JOIN orders o ON coh.customer_id = o.customer_id
+    WHERE o.order_date > coh.order_date
+)
+SELECT *
+FROM customer_order_history
+ORDER BY customer_id, order_date;
+
+-- WINDOW FUNCTION
+
+-- 40 **Rank customers by total spending**:
+SELECT c.first_name,c.first_name , c.last_name,SUM(o.total_amount) 
+	AS TOTAL_SPEND, 
+		RANK() OVER(ORDER BY SUM(o.total_amount) DESC) AS ranking 
+    FROM customers c 
+    JOIN orders o 
+		ON c.customer_id=o.customer_id 
+			GROUP BY c.customer_id,c.first_name,c.last_name;
+
+-- 41 **Calculate running total of order amounts by date**:
+SELECT order_date,total_amount ,SUM(total_amount) 
+	OVER (ORDER BY order_date DESC) AS running_total 
+FROM orders;
+
+-- 42 **Find each customer's most recent order**:
+SELECT o.customer_id, c.first_name,c.last_name,o.order_id,o.order_date,o.total_amount
+FROM orders o
+JOIN customerS c 
+	ON c.customer_id=o.customer_id
+JOIN(
+	SELECT customer_id,MAX(order_date) AS largest_order_date
+    FROM orders 
+    GROUP BY customer_id
+) latest_orders
+ON o.customer_id=latest_orders.customer_id AND o.order_date=latest_orders.largest_order_date;
+
+-- 43 **Calculate month-over-month sales growth**:
+WITH month_wise_total AS(
+SELECT EXTRACT(MONTH FROM o.order_date) AS month_no , SUM(oi.unit_price) AS total FROM order_items oi JOIN orders o ON o.order_id = oi.order_id
+ GROUP BY EXTRACT(MONTH FROM order_date)
+),
+month_growth AS(
+	SELECT month_no,total,
+		LAG(total) OVER(ORDER BY month_no) AS last_month_total,
+        total - LAG(total) OVER(ORDER BY month_no) AS changes,
+        CASE
+			WHEN LAG(total) OVER(ORDER BY month_no) IS NULL THEN NULL
+            ELSE ROUND(100 * (total - LAG(total) OVER(ORDER BY month_no)) / LAG(total) OVER(ORDER BY month_no),2)
+		END AS percentage
+        FROM month_wise_total
+)
+select * from month_growth;
+select * from orders;
+
+-- Data Modification
+
+-- 44. **Insert a new customer**:
+INSERT INTO customers(first_name,last_name,email,phone,address,city,state,zip_code)
+	VALUES("Het","Maradiya","hetmardiya9@gmail.com",8128758520,"kamrej","surat","gujrat",394185);
+-- 45 **Update product prices with a percentage increase**:
+UPDATE products SET price = price* 1.10 WHERE category = 'Electronics';
+select * from products;
+-- 46 **Delete orders older than a certain date**:
+DELETE FROM orders WHERE order_date < '2023-01-01';
+-- 47 **Update customer address**:
+UPDATE customers SET address="rajkot" WHERE first_name="Het";
+-- 48 **Insert a new order with items (transaction)**:
+select * from products;
+START TRANSACTION;
+
+-- Insert into orders and capture the order_id
+INSERT INTO orders (customer_id, status, total_amount, shipping_address, payment_method)
+VALUES (3, 'pending', 299, 'Ahmedabad', 'online');
+
+-- Get the last inserted order ID
+SET @new_order_id = LAST_INSERT_ID();
+
+-- Insert into order_items using the captured order_id
+INSERT INTO order_items (order_id, product_id, quantity, unit_price)
+VALUES (@new_order_id, 7, 1, 299),
+       (@new_order_id, 11, 2, 24.99);
+
+-- Update product stock
+UPDATE products SET stock_quantity = stock_quantity - 1 WHERE product_id = 7;
+UPDATE products SET stock_quantity = stock_quantity - 2 WHERE product_id = 11;
+
+COMMIT;
+
+-- 49 **Customer segmentation by spending**:
+WITH customer_spending_per_month AS(
+	SELECT c.customer_id,c.first_name,c.last_name,SUM(o.total_amount) AS total_spent
+    FROM customers c 
+    JOIN orders o ON c.customer_id=o.customer_id
+    GROUP BY c.customer_id
+)
+SELECT customer_id,first_name,last_name,total_spent,
+	CASE 
+		WHEN total_spent > 1000 THEN "High Value"
+        WHEN total_spent > 500 THEN "Midium Value"
+        WHEN total_spent < 500 THEN "Low Value"
+	END AS customer_segement
+FROM customer_spending_per_month ORDER BY total_spent DESC;
+
+-- 50 **Calculate product profitability (assuming cost is 60% of price)**:
+WITH product_profitability AS (
+	SELECT p.product_id,p.name,p.price,
+    SUM(oi.quantity) AS units_sold,
+	SUM(oi.quantity * oi.unit_price) AS revenu,
+    SUM(oi.quantity * (p.price * 0.6)) AS cost
+    FROM products p 
+    JOIN order_items oi ON p.product_id = oi.product_id
+    GROUP BY p.product_id
+)
+SELECT product_id,name,units_sold,revenu,cost, revenu-cost AS profit,
+	CASE
+		WHEN revenu = 0 THEN 0
+        ELSE ROUND(100.0 * (revenu-cost)/revenu, 2)
+	END AS profit_margin
+FROM product_profitability 
+ORDER BY profit DESC;
+
+-- 51 **RFM (Recency, Frequency, Monetary) analysis for customer segmentation**:
+
+-- 52 **Analyze sales by day of week**:
+SELECT 
+	DAYNAME(order_date) AS days, 
+    COUNT(order_id) AS total_orders , 
+    SUM(total_amount) 
+FROM orders 
+	GROUP BY DAYNAME(order_date)
+    ORDER BY FIELD(DAYNAME(order_date), 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday');
+    -- ORDER BY WEEKDAY(order_date);
+
+-- 53 **Create indexes for better performance**:
+-- Index for customer lookup by email
+CREATE INDEX indx_customers_email ON customers(email);
+DROP INDEX indx_customers_email ON customers;
+-- Index for product search by category
+CREATE INDEX indx_products_category ON products(category);
+DROP INDEX indx_products_category ON products;
+-- Index for order filtering by date
+CREATE INDEX indx_orders_date ON orders(order_date);
+DROP INDEX indx_orders_date ON orders;
+-- Composite index for order items
+CREATE INDEX indx_order_items_order_product ON order_items(order_id, product_id);
+DROP INDEX indx_order_items_order_product ON order_items;
+
+-- 54 **Analyze query performance**:
+EXPLAIN ANALYZE
+SELECT c.customer_id, c.first_name, c.last_name, 
+       COUNT(o.order_id) AS order_count,
+       SUM(o.total_amount) AS total_spent
+FROM customers c
+JOIN orders o ON c.customer_id = o.customer_id
+GROUP BY c.customer_id, c.first_name, c.last_name
+ORDER BY total_spent DESC;
+
+-- 55 **Create a materialized view for frequently accessed reports**:
+CREATE VIEW customer_order_summary AS
+SELECT c.customer_id, c.first_name, c.last_name, c.email,
+       COUNT(o.order_id) AS order_count,
+       SUM(o.total_amount) AS total_spent,
+       AVG(o.total_amount) AS avg_order_value,
+       MIN(o.order_date) AS first_order_date,
+       MAX(o.order_date) AS last_order_date
+FROM customers c
+LEFT JOIN orders o ON c.customer_id = o.customer_id
+GROUP BY c.customer_id, c.first_name, c.last_name, c.email;
+
+SELECT * FROM customer_order_summary;
+
+-- 56 **Find customers who bought product A but not product B**:
+SELECT DISTINCT c.* 
+	FROM customers c 
+    JOIN orders o 
+		ON c.customer_id = o.customer_id
+	JOIN order_items oi
+		ON o.order_id = oi.order_id
+	WHERE oi.product_id = 3
+		AND c.customer_id NOT IN (
+			SELECT c2.customer_id
+            FROM customers c2
+			JOIN orders o2 
+				ON c2.customer_id = o2.customer_id
+			JOIN order_items oi
+				ON o.order_id = oi.order_id
+			WHERE oi.product_id = 6
+        );
+        
+-- 57  **Calculate average time between orders for each customer**:
+
+
+
+WITH customer_order_dates AS (
+    SELECT customer_id, order_date,
+           LAG(order_date) OVER (PARTITION BY customer_id ORDER BY order_date) AS previous_order_date
+    FROM orders
+)
+SELECT customer_id,
+       AVG(order_date - previous_order_date) AS avg_days_between_orders
+FROM customer_order_dates
+WHERE previous_order_date IS NOT NULL
+GROUP BY customer_id
+ORDER BY avg_days_between_orders;
